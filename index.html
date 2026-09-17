@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Grid Live</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+:root{--bg:#090b10;--card:#121621;--line:#283044;--text:#f6f7fb;--muted:#aab2c3;--hot:#ffcc33;--danger:#ff4d67;--ok:#46e6a8}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#1b2130,#090b10 45%);color:var(--text);font-family:Inter,system-ui,Arial,sans-serif;min-height:100vh}
+.wrap{max-width:1150px;margin:auto;padding:22px}.brand{text-align:center;margin:12px 0 22px}.brand h1{font-size:clamp(38px,7vw,78px);letter-spacing:.08em;margin:0}.brand span{color:var(--hot)}.brand p{color:var(--muted);margin:4px}
+.card{background:rgba(18,22,33,.94);border:1px solid var(--line);border-radius:20px;padding:20px;box-shadow:0 18px 50px #0007}.home{max-width:620px;margin:auto}
+input,button{font:inherit;border-radius:12px;padding:13px 14px}input{width:100%;background:#0c1018;color:white;border:1px solid #343d52;margin:6px 0 10px}
+button{border:0;background:var(--hot);font-weight:900;cursor:pointer;color:#161616}button.alt{background:#283044;color:white}button.danger{background:var(--danger);color:white}button.ok{background:var(--ok)}button:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1}.hidden{display:none!important}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.pill{background:#090c13;border:1px solid #30384a;padding:9px 12px;border-radius:999px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(95px,1fr));gap:10px;margin-top:18px}
+.cell{min-height:88px;background:#171d2a;border:2px solid #30384a;border-radius:15px;padding:10px;text-align:center;display:flex;flex-direction:column;justify-content:center;transition:.25s}
+.cell .num{font-size:26px;font-weight:1000}.cell .owner{font-size:12px;color:#d9deea;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cell.open{cursor:pointer}.cell.mine{border-color:var(--hot);box-shadow:0 0 0 2px #ffcc3330}.cell.dead{background:#32131a;border-color:#8d293b;opacity:.55;transform:scale(.96)}.cell.dead .num{text-decoration:line-through}.cell.alive{border-color:#3b5364}
+.winner{padding:26px;text-align:center;border:2px solid var(--hot);background:#2a2410;border-radius:20px;margin:16px 0}.winner h2{font-size:36px;margin:0;color:var(--hot)}
+.log{max-height:250px;overflow:auto;font-size:14px}.log div{padding:8px 0;border-bottom:1px solid #242b3b;color:#d5dbea}
+.host{margin:16px 0;display:flex;gap:8px;flex-wrap:wrap}.host button{flex:1;min-width:140px}
+.small{font-size:13px;color:var(--muted)}.status{font-weight:900;letter-spacing:.08em}.live{color:var(--danger)}.lobby{color:var(--hot)}.finished{color:var(--ok)}
+@media(max-width:600px){.wrap{padding:12px}.grid{grid-template-columns:repeat(3,1fr)}.cell{min-height:78px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><h1>THE <span>GRID</span></h1><p>CLAIM IT. SURVIVE IT. WIN IT.</p></div>
+
+  <section id="home" class="card home">
+    <h2>Enter The Grid</h2>
+    <input id="name" placeholder="Your display name" maxlength="24">
+    <div class="row">
+      <button onclick="showCreate()">CREATE GAME</button>
+      <button class="alt" onclick="showJoin()">JOIN GAME</button>
+    </div>
+    <div id="createBox" class="hidden">
+      <hr>
+      <input id="title" placeholder="Game title" value="THE GRID LIVE">
+      <input id="size" type="number" min="10" max="100" value="30" placeholder="Number of spots">
+      <input id="prize" placeholder="Prize display, e.g. $500 CASH" value="$500 CASH">
+      <button onclick="createGame()">OPEN THE GRID</button>
+    </div>
+    <div id="joinBox" class="hidden">
+      <hr><input id="code" placeholder="4-character room code" maxlength="4">
+      <button onclick="joinGame()">JOIN ROOM</button>
+    </div>
+    <p id="err" class="small"></p>
+  </section>
+
+  <section id="game" class="hidden">
+    <div class="card">
+      <div class="top">
+        <div><h2 id="gameTitle" style="margin:0"></h2><div class="small">ROOM <b id="roomCode"></b> • ROUND <b id="round"></b></div></div>
+        <div class="pill">PRIZE: <b id="prizeText"></b></div>
+        <div class="pill status" id="status"></div>
+      </div>
+      <div id="winner"></div>
+      <div id="hostControls" class="host hidden">
+        <button id="startBtn" class="ok" onclick="startGame()">CLOSE CLAIMS & START</button>
+        <button class="danger" onclick="elimOne()">ELIMINATE 1</button>
+        <button class="danger" onclick="elimBatch(3)">ELIMINATE 3</button>
+        <button class="alt" onclick="reopen()">REOPEN SAME GRID</button>
+        <button class="alt" onclick="newRound()">NEW ROUND / CLEAR CLAIMS</button>
+      </div>
+      <p id="instruction" class="small"></p>
+      <div id="grid" class="grid"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <div class="top"><h3>LIVE FEED</h3><div><b id="claimed"></b> claimed • <b id="alive"></b> alive</div></div>
+      <div id="log" class="log"></div>
+    </div>
+  </section>
+</div>
+<script>
+const socket=io();let room=null,me=null,lastState=null;
+const $=id=>document.getElementById(id);
+function showCreate(){$('createBox').classList.remove('hidden');$('joinBox').classList.add('hidden')}
+function showJoin(){$('joinBox').classList.remove('hidden');$('createBox').classList.add('hidden')}
+function nm(){return $('name').value.trim()}
+function createGame(){
+ if(!nm())return $('err').textContent='Enter your name first.';
+ socket.emit('create',{name:nm(),title:$('title').value,gridSize:$('size').value,prize:$('prize').value},r=>{
+   if(!r.ok)return $('err').textContent=r.msg; room=r.code;me=socket.id;enter();
+ });
+}
+function joinGame(){
+ if(!nm())return $('err').textContent='Enter your name first.';
+ socket.emit('join',{name:nm(),code:$('code').value},r=>{
+   if(!r.ok)return $('err').textContent=r.msg;room=r.code;me=socket.id;enter();
+ });
+}
+function enter(){$('home').classList.add('hidden');$('game').classList.remove('hidden')}
+function claim(n){socket.emit('claim',{code:room,n},r=>{if(r&&!r.ok)alert(r.msg)})}
+function startGame(){socket.emit('start',room)}function elimOne(){socket.emit('eliminateOne',room)}
+function elimBatch(n){socket.emit('eliminateBatch',{code:room,count:n})}
+function reopen(){socket.emit('reopen',room)}function newRound(){if(confirm('Clear every claim and open a fresh round?'))socket.emit('newRound',room)}
+socket.on('state',s=>{
+ if(room && s.code!==room)return;lastState=s;
+ $('gameTitle').textContent=s.title;$('roomCode').textContent=s.code;$('round').textContent=s.round;$('prizeText').textContent=s.prize;
+ $('status').textContent=s.status.toUpperCase();$('status').className='pill status '+s.status;
+ const isHost=s.host===socket.id;$('hostControls').classList.toggle('hidden',!isHost);
+ $('startBtn').disabled=s.status!=='lobby';
+ const mine=s.players.find(p=>p.id===socket.id);
+ $('instruction').textContent=s.status==='lobby' ? (mine?.cell ? `You claimed #${mine.cell}. Tap another open spot to switch.` : 'Tap an OPEN number to claim your position.') :
+   s.status==='live' ? 'Claims are closed. Watch the host eliminate positions live.' : 'This round is complete.';
+ const grid=$('grid');grid.innerHTML='';
+ s.cells.forEach(c=>{
+   const d=document.createElement('div');d.className='cell '+(c.eliminated?'dead':c.owner?'alive':'open')+(c.owner===socket.id?' mine':'');
+   d.innerHTML=`<div class="num">${String(c.n).padStart(2,'0')}</div><div class="owner">${c.eliminated?'ELIMINATED':(c.ownerName||'OPEN')}</div>`;
+   if(s.status==='lobby'&&!c.owner)d.onclick=()=>claim(c.n);
+   if(s.status==='lobby'&&c.owner===socket.id)d.onclick=()=>{};
+   grid.appendChild(d);
+ });
+ const claimed=s.cells.filter(c=>c.owner).length,alive=s.cells.filter(c=>c.owner&&!c.eliminated).length;
+ $('claimed').textContent=claimed;$('alive').textContent=alive;
+ $('log').innerHTML=s.log.slice().reverse().map(x=>`<div>${x.msg}</div>`).join('');
+ $('winner').innerHTML=s.winner?`<div class="winner"><div>🏆 WINNER 🏆</div><h2>#${s.winner.n}</h2><h3>${s.winner.name}</h3><div>${s.prize}</div></div>`:'';
+});
+</script>
+</body></html>
